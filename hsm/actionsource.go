@@ -32,11 +32,12 @@ type ActionSource interface {
 type coordinatorSource struct {
 	fsRoot  fs.RootDir
 	actions <-chan ActionRequest
+	maxListenQueueDepth int
 }
 
 // NewActionSource initializes an ActionSource for the filesystem in root.
-func NewActionSource(root fs.RootDir) ActionSource {
-	return &coordinatorSource{fsRoot: root}
+func NewActionSource(root fs.RootDir, queueDepth int) ActionSource {
+	return &coordinatorSource{fsRoot: root, maxListenQueueDepth: queueDepth}
 }
 
 // Start signals the source to begin sending actions
@@ -78,7 +79,7 @@ func (src *coordinatorSource) actionListener(stopFile *os.File) error {
 		return fmt.Errorf("%s: %s", src.fsRoot, err)
 	}
 
-	ch := make(chan ActionRequest)
+	ch := make(chan ActionRequest, src.maxListenQueueDepth)
 
 	go func() {
 		var events = make([]unix.EpollEvent, 2)
@@ -146,39 +147,6 @@ func (src *coordinatorSource) actionListener(stopFile *os.File) error {
 		}
 	}()
 
-	src.actions = bufferedActionChannel(ch)
+	src.actions = ch
 	return nil
-}
-
-// bufferedActionChannel buffers the input channel into an arbitrarily sized queue, and returns
-// the channel for consumers to read from.
-func bufferedActionChannel(in <-chan ActionRequest) <-chan ActionRequest {
-	var queue []ActionRequest
-	out := make(chan ActionRequest)
-
-	go func() {
-		defer close(out)
-		for {
-			var send chan ActionRequest
-			var first ActionRequest
-
-			if len(queue) > 0 {
-				send = out
-				first = queue[0]
-			}
-			select {
-			case item, ok := <-in:
-				if !ok {
-					debug.Print("in channel failed, close out!")
-					return
-				}
-				queue = append(queue, item)
-
-			case send <- first:
-				queue = queue[1:]
-			}
-		}
-	}()
-
-	return out
 }
